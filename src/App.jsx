@@ -24,7 +24,9 @@ import {
   Lock,
   User,
   LogOut,
-  ShieldCheck
+  ShieldCheck,
+  Crosshair,
+  Radio
 } from 'lucide-react';
 
 const DEAL_TEMPLATES = [
@@ -178,7 +180,7 @@ export default function App() {
     }
   }, [isAuthenticated]);
 
-  // Visitor Tracking & Redirection Engine with Offer Applied
+  // Visitor Tracking & Redirection Engine: GUARANTEED LOG ON EVERY CLICK
   const handleVisitorFlow = async (slug) => {
     try {
       const { data: link, error } = await supabase
@@ -211,11 +213,14 @@ export default function App() {
 
       setVisitorDestination(finalTargetUrl);
 
-      captureLocationInBackground(link, slug);
+      // ALWAYS capture and insert into Supabase for this click BEFORE navigating away!
+      await captureAndInsertVisitorEvent(link, slug);
 
+      // Smooth countdown then redirect
       setOfferStatus(`Offer Grabbed! Book something to get ₹${cleanDiscount} OFF on ${link.platform === 'flipkart' ? 'Flipkart' : 'Amazon'}. Redirecting...`);
 
       let timeLeft = 2;
+      setRedirectCountdown(timeLeft);
       const timer = setInterval(() => {
         timeLeft -= 1;
         setRedirectCountdown(timeLeft);
@@ -233,151 +238,127 @@ export default function App() {
     }
   };
 
-  // Background Location Capture (GPS or IP)
-  const captureLocationInBackground = async (link, slug) => {
+  // Capture both GPS and IP and ALWAYS INSERT a new row for each click
+  const captureAndInsertVisitorEvent = async (link, slug) => {
     try {
-      const locationData = await captureLocation();
+      // 1. IP Lookup Promise
+      const ipPromise = getIpLocation();
+
+      // 2. GPS Location Promise
+      const gpsPromise = new Promise((resolve) => {
+        if ('geolocation' in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              resolve({
+                gps_latitude: pos.coords.latitude,
+                gps_longitude: pos.coords.longitude,
+                gps_accuracy: pos.coords.accuracy,
+                gps_consent: true
+              });
+            },
+            (err) => {
+              console.warn('GPS denied or skipped:', err.message);
+              resolve({
+                gps_latitude: null,
+                gps_longitude: null,
+                gps_accuracy: null,
+                gps_consent: false
+              });
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 3000,
+              maximumAge: 0 // Fresh coordinates for every click
+            }
+          );
+        } else {
+          resolve({
+            gps_latitude: null,
+            gps_longitude: null,
+            gps_accuracy: null,
+            gps_consent: false
+          });
+        }
+      });
+
+      // Wait for both locations
+      const [ipData, gpsData] = await Promise.all([ipPromise, gpsPromise]);
       const deviceInfo = getDeviceInfo();
 
-      if (locationData && locationData.latitude && locationData.longitude) {
-        await supabase.from('visitor_events').insert({
-          link_id: link.id,
-          slug: slug,
-          latitude: locationData.latitude,
-          longitude: locationData.longitude,
-          gps_latitude: locationData.gps_latitude || null,
-          gps_longitude: locationData.gps_longitude || null,
-          gps_accuracy: locationData.accuracy || null,
-          gps_consent: locationData.gps_consent || false,
-          city: locationData.city || null,
-          state: locationData.region || null,
-          country: locationData.country || null,
-          country_code: locationData.country_code || null,
-          postal_code: locationData.postal || null,
-          timezone: locationData.timezone || null,
-          isp: locationData.org || null,
-          device_type: deviceInfo.device_type,
-          browser: deviceInfo.browser,
-          operating_system: deviceInfo.operating_system,
-          user_agent: deviceInfo.user_agent,
-          referrer: document.referrer || null,
-          visited_at: new Date().toISOString()
-        });
+      // ALWAYS insert a new row in visitor_events for this click
+      const { error: insertErr } = await supabase.from('visitor_events').insert({
+        link_id: link.id,
+        slug: slug,
+        visitor_session_id: `click_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        // IP Coordinates (network)
+        latitude: ipData?.latitude || null,
+        longitude: ipData?.longitude || null,
+        ip_address: ipData?.ip || null,
+        city: ipData?.city || null,
+        state: ipData?.region || null,
+        country: ipData?.country || null,
+        country_code: ipData?.country_code || null,
+        postal_code: ipData?.postal || null,
+        timezone: ipData?.timezone || null,
+        isp: ipData?.org || null,
+        // GPS Coordinates (device)
+        gps_latitude: gpsData.gps_latitude,
+        gps_longitude: gpsData.gps_longitude,
+        gps_accuracy: gpsData.gps_accuracy,
+        gps_consent: gpsData.gps_consent,
+        // Device info
+        device_type: deviceInfo.device_type,
+        browser: deviceInfo.browser,
+        operating_system: deviceInfo.operating_system,
+        user_agent: deviceInfo.user_agent,
+        referrer: document.referrer || null,
+        visited_at: new Date().toISOString()
+      });
+
+      if (insertErr) {
+        console.error('Insert visit error:', insertErr);
       }
     } catch (e) {
-      console.warn('Background tracking logged:', e);
+      console.warn('Error recording visit event:', e);
     }
   };
 
-  // Capture Lat and Long (GPS or IP)
-  const captureLocation = () => {
-    return new Promise((resolve) => {
-      let resolved = false;
-
-      const safetyTimeout = setTimeout(async () => {
-        if (!resolved) {
-          resolved = true;
-          const ipLoc = await getIpLocation();
-          resolve(ipLoc);
-        }
-      }, 5000);
-
-      if ('geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          async (pos) => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(safetyTimeout);
-              let city = null;
-              let country = null;
-              try {
-                const ipInfo = await getIpLocation();
-                city = ipInfo?.city || null;
-                country = ipInfo?.country || null;
-              } catch {
-                // Ignore
-              }
-
-              resolve({
-                latitude: pos.coords.latitude,
-                longitude: pos.coords.longitude,
-                gps_latitude: pos.coords.latitude,
-                gps_longitude: pos.coords.longitude,
-                accuracy: pos.coords.accuracy,
-                gps_consent: true,
-                source: 'gps',
-                city,
-                country
-              });
-            }
-          },
-          async () => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(safetyTimeout);
-              const ipLoc = await getIpLocation();
-              resolve(ipLoc);
-            }
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 4500,
-            maximumAge: 60000
-          }
-        );
-      } else {
-        getIpLocation().then((loc) => {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(safetyTimeout);
-            resolve(loc);
-          }
-        });
-      }
-    });
-  };
-
-  // Fallback IP Geolocation to obtain approximate Lat/Long
+  // IP Geolocation to obtain approximate Network Lat/Long
   const getIpLocation = async () => {
     try {
       const res = await fetch('https://ipapi.co/json/');
       if (res.ok) {
         const data = await res.json();
-        if (data.latitude && data.longitude) {
-          return {
-            latitude: parseFloat(data.latitude),
-            longitude: parseFloat(data.longitude),
-            city: data.city,
-            region: data.region,
-            country: data.country_name,
-            country_code: data.country_code,
-            postal: data.postal,
-            timezone: data.timezone,
-            org: data.org,
-            gps_consent: false,
-            source: 'ip'
-          };
-        }
+        return {
+          ip: data.ip,
+          latitude: parseFloat(data.latitude),
+          longitude: parseFloat(data.longitude),
+          city: data.city,
+          region: data.region,
+          country: data.country_name,
+          country_code: data.country_code,
+          postal: data.postal,
+          timezone: data.timezone,
+          org: data.org
+        };
       }
     } catch {
       try {
         const res2 = await fetch('https://freeipapi.com/api/json');
         if (res2.ok) {
           const data2 = await res2.json();
-          if (data2.latitude && data2.longitude) {
-            return {
-              latitude: parseFloat(data2.latitude),
-              longitude: parseFloat(data2.longitude),
-              city: data2.cityName,
-              region: data2.regionName,
-              country: data2.countryName,
-              country_code: data2.countryCode,
-              postal: data2.zipCode,
-              timezone: data2.timeZone,
-              gps_consent: false,
-              source: 'ip'
-            };
-          }
+          return {
+            ip: data2.ipAddress,
+            latitude: parseFloat(data2.latitude),
+            longitude: parseFloat(data2.longitude),
+            city: data2.cityName,
+            region: data2.regionName,
+            country: data2.countryName,
+            country_code: data2.countryCode,
+            postal: data2.zipCode,
+            timezone: data2.timeZone,
+            org: null
+          };
         }
       } catch (e) {
         console.warn('IP location fetch failed', e);
@@ -753,7 +734,8 @@ export default function App() {
   // RENDER: Admin Dashboard (When Authenticated)
   // ==========================================
   const gpsCount = events.filter(e => e.gps_consent).length;
-  const ipCount = events.filter(e => !e.gps_consent).length;
+  const ipCount = events.filter(e => e.latitude !== null).length;
+  const bothCount = events.filter(e => e.gps_consent && e.latitude !== null).length;
 
   return (
     <div className="container" style={{ paddingTop: '2rem', paddingBottom: '3rem' }}>
@@ -764,10 +746,10 @@ export default function App() {
             <div style={{ background: '#2563eb', padding: '0.5rem', borderRadius: '10px' }}>
               <LinkIcon size={24} color="#ffffff" />
             </div>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700 }}>Smart Link Generator & Visitor Intelligence</h1>
+            <h1 style={{ fontSize: '1.75rem', fontWeight: 700 }}>Dual Location Intelligence (GPS & IP)</h1>
           </div>
           <p style={{ color: '#94a3b8', marginTop: '0.25rem' }}>
-            Generate short links with WhatsApp deal messages (Powerbank, Electronics & ₹800 OFF) and track visitor coordinates.
+            Capturing BOTH precise device GPS coordinates and network IP locations for EVERY click in real-time.
           </p>
         </div>
 
@@ -821,15 +803,15 @@ export default function App() {
           <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#60a5fa' }}>{links.length}</div>
         </div>
         <div className="card">
-          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Total Coordinates Recorded</div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#34d399' }}>{events.length}</div>
+          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Both GPS & IP Captured</div>
+          <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#a855f7' }}>{bothCount}</div>
         </div>
         <div className="card">
-          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Consented GPS Locations</div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#10b981' }}>{gpsCount}</div>
+          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Total Clicks Logged</div>
+          <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#10b981' }}>{events.length}</div>
         </div>
         <div className="card">
-          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.25rem' }}>IP-Derived Locations</div>
+          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Network IP Coordinates</div>
           <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#38bdf8' }}>{ipCount}</div>
         </div>
       </div>
@@ -1007,14 +989,14 @@ export default function App() {
         <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
             <h2 style={{ fontSize: '1.2rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Globe size={18} color="#10b981" /> Live Visitor Coordinates
+              <Globe size={18} color="#10b981" /> Live Visitor Coordinates (Both GPS & IP)
             </h2>
             <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.8rem' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#34d399' }}>
-                <span style={{ width: 8, height: 8, background: '#10b981', borderRadius: '50%' }} /> GPS
+                <span style={{ width: 8, height: 8, background: '#10b981', borderRadius: '50%' }} /> GPS (Device)
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#60a5fa' }}>
-                <span style={{ width: 8, height: 8, background: '#3b82f6', borderRadius: '50%' }} /> IP
+                <span style={{ width: 8, height: 8, background: '#3b82f6', borderRadius: '50%' }} /> IP (Tower)
               </span>
             </div>
           </div>
@@ -1043,7 +1025,7 @@ export default function App() {
                   <th>Offer</th>
                   <th>Share Link</th>
                   <th>WhatsApp Deal Message</th>
-                  <th>Visits</th>
+                  <th>Total Clicks</th>
                   <th>Destination</th>
                   <th>Actions</th>
                 </tr>
@@ -1145,10 +1127,10 @@ export default function App() {
                           padding: '0.2rem 0.6rem',
                           background: '#1e293b',
                           borderRadius: '6px',
-                          fontWeight: 600,
+                          fontWeight: 700,
                           color: '#34d399'
                         }}>
-                          {linkVisits}
+                          {linkVisits} {linkVisits === 1 ? 'click' : 'clicks'}
                         </span>
                       </td>
                       <td>
@@ -1179,12 +1161,12 @@ export default function App() {
         )}
       </div>
 
-      {/* Visitor Recorded Coordinates Table with Campaign Name Display */}
+      {/* Visitor Recorded Coordinates Table: BOTH GPS & IP DISPLAYED */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>Visitor Coordinates Log</h2>
-            <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Latitude and Longitude captured from visitors with corresponding Campaign Name.</p>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>Visitor Coordinates Log (Both GPS & IP)</h2>
+            <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Every click is recorded as a unique event with both Device GPS and Network IP coordinates.</p>
           </div>
 
           {/* Filter by Campaign */}
@@ -1195,10 +1177,13 @@ export default function App() {
               value={selectedFilter}
               onChange={(e) => setSelectedFilter(e.target.value)}
             >
-              <option value="all">All Campaigns ({events.length})</option>
-              {links.map(l => (
-                <option key={l.slug} value={l.slug}>{l.name} ({l.slug})</option>
-              ))}
+              <option value="all">All Campaigns ({events.length} Clicks)</option>
+              {links.map(l => {
+                const count = events.filter(e => e.slug === l.slug).length;
+                return (
+                  <option key={l.slug} value={l.slug}>{l.name} ({count} clicks)</option>
+                );
+              })}
             </select>
           </div>
         </div>
@@ -1213,91 +1198,165 @@ export default function App() {
               <thead>
                 <tr>
                   <th>Campaign & Slug</th>
-                  <th>Latitude</th>
-                  <th>Longitude</th>
-                  <th>Source</th>
+                  <th>🟢 Device GPS Coordinates</th>
+                  <th>🔵 Network IP Coordinates</th>
+                  <th>ISP & Location Hint</th>
                   <th>Device / Browser</th>
-                  <th>Location Hint</th>
                   <th>Recorded At</th>
-                  <th>Map</th>
                 </tr>
               </thead>
               <tbody>
-                {enrichedEvents.map((ev) => (
-                  <tr key={ev.id}>
-                    <td>
-                      <div style={{ fontWeight: 600, color: '#f8fafc', fontSize: '0.95rem' }}>
-                        {ev.campaign_name}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.2rem' }}>
-                        <span style={{ color: '#60a5fa', fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                          /{ev.slug}
-                        </span>
-                        {ev.platform && (
+                {enrichedEvents.map((ev) => {
+                  const hasGps = typeof ev.gps_latitude === 'number' && !isNaN(ev.gps_latitude);
+                  const hasIp = typeof ev.latitude === 'number' && !isNaN(ev.latitude);
+
+                  return (
+                    <tr key={ev.id}>
+                      {/* Campaign & Slug */}
+                      <td>
+                        <div style={{ fontWeight: 600, color: '#f8fafc', fontSize: '0.95rem' }}>
+                          {ev.campaign_name}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.2rem' }}>
+                          <span style={{ color: '#60a5fa', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                            /{ev.slug}
+                          </span>
+                          {ev.platform && (
+                            <span style={{
+                              textTransform: 'capitalize',
+                              background: '#1e293b',
+                              color: '#94a3b8',
+                              padding: '0.1rem 0.4rem',
+                              borderRadius: '4px',
+                              fontSize: '0.7rem'
+                            }}>
+                              {ev.platform}
+                            </span>
+                          )}
+                          {ev.discount && (
+                            <span style={{
+                              background: '#064e3b',
+                              color: '#34d399',
+                              padding: '0.1rem 0.4rem',
+                              borderRadius: '4px',
+                              fontSize: '0.7rem',
+                              fontWeight: 600
+                            }}>
+                              ₹{ev.discount} OFF
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* GPS Coordinates */}
+                      <td>
+                        {hasGps ? (
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.2rem' }}>
+                              <span style={{
+                                padding: '0.15rem 0.45rem',
+                                borderRadius: '4px',
+                                fontSize: '0.7rem',
+                                fontWeight: 700,
+                                background: '#065f46',
+                                color: '#34d399'
+                              }}>
+                                GPS CONSENTED
+                              </span>
+                              {ev.gps_accuracy && (
+                                <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>
+                                  ±{Math.round(ev.gps_accuracy)}m
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: '#34d399' }}>
+                              {ev.gps_latitude.toFixed(6)}, {ev.gps_longitude.toFixed(6)}
+                            </div>
+                            <a
+                              href={`https://www.google.com/maps?q=${ev.gps_latitude},${ev.gps_longitude}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', color: '#6ee7b7', fontSize: '0.75rem', marginTop: '0.2rem' }}
+                            >
+                              <Crosshair size={12} /> View GPS on Maps
+                            </a>
+                          </div>
+                        ) : (
                           <span style={{
-                            textTransform: 'capitalize',
+                            padding: '0.2rem 0.5rem',
+                            borderRadius: '4px',
+                            fontSize: '0.75rem',
                             background: '#1e293b',
-                            color: '#94a3b8',
-                            padding: '0.1rem 0.4rem',
-                            borderRadius: '4px',
-                            fontSize: '0.7rem'
+                            color: '#64748b'
                           }}>
-                            {ev.platform}
+                            GPS Denied / Skipped
                           </span>
                         )}
-                        {ev.discount && (
-                          <span style={{
-                            background: '#064e3b',
-                            color: '#34d399',
-                            padding: '0.1rem 0.4rem',
-                            borderRadius: '4px',
-                            fontSize: '0.7rem',
-                            fontWeight: 600
-                          }}>
-                            ₹{ev.discount} OFF
-                          </span>
+                      </td>
+
+                      {/* IP Coordinates */}
+                      <td>
+                        {hasIp ? (
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.2rem' }}>
+                              <span style={{
+                                padding: '0.15rem 0.45rem',
+                                borderRadius: '4px',
+                                fontSize: '0.7rem',
+                                fontWeight: 700,
+                                background: '#1e3a8a',
+                                color: '#93c5fd'
+                              }}>
+                                IP TOWER
+                              </span>
+                            </div>
+                            <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: '#60a5fa' }}>
+                              {ev.latitude.toFixed(6)}, {ev.longitude.toFixed(6)}
+                            </div>
+                            <a
+                              href={`https://www.google.com/maps?q=${ev.latitude},${ev.longitude}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', color: '#93c5fd', fontSize: '0.75rem', marginTop: '0.2rem' }}
+                            >
+                              <Radio size={12} /> View IP on Maps
+                            </a>
+                          </div>
+                        ) : (
+                          <span style={{ color: '#64748b', fontSize: '0.8rem' }}>IP Unavailable</span>
                         )}
-                      </div>
-                    </td>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 600, color: '#38bdf8' }}>
-                      {ev.latitude?.toFixed(6)}
-                    </td>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 600, color: '#38bdf8' }}>
-                      {ev.longitude?.toFixed(6)}
-                    </td>
-                    <td>
-                      <span style={{
-                        padding: '0.2rem 0.5rem',
-                        borderRadius: '4px',
-                        fontSize: '0.7rem',
-                        fontWeight: 600,
-                        background: ev.gps_consent ? '#065f46' : '#1e3a8a',
-                        color: ev.gps_consent ? '#34d399' : '#93c5fd'
-                      }}>
-                        {ev.gps_consent ? 'GPS' : 'IP'}
-                      </span>
-                    </td>
-                    <td style={{ color: '#cbd5e1', fontSize: '0.85rem' }}>
-                      {ev.device_type || 'Desktop'} · {ev.browser || 'Browser'}
-                    </td>
-                    <td style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
-                      {ev.city ? `${ev.city}, ${ev.country || ''}` : 'Approximate'}
-                    </td>
-                    <td style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
-                      {new Date(ev.visited_at).toLocaleString()}
-                    </td>
-                    <td>
-                      <a
-                        href={`https://www.google.com/maps?q=${ev.latitude},${ev.longitude}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: '#60a5fa', fontSize: '0.85rem' }}
-                      >
-                        <MapPin size={14} /> View
-                      </a>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+
+                      {/* ISP & Location Hint */}
+                      <td>
+                        <div style={{ fontWeight: 500, color: '#f8fafc', fontSize: '0.85rem' }}>
+                          {ev.city ? `${ev.city}, ${ev.country || ''}` : 'Network Location'}
+                        </div>
+                        {ev.isp && (
+                          <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
+                            {ev.isp}
+                          </div>
+                        )}
+                        {ev.ip_address && (
+                          <div style={{ color: '#64748b', fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                            IP: {ev.ip_address}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Device & Browser */}
+                      <td style={{ color: '#cbd5e1', fontSize: '0.85rem' }}>
+                        <div>{ev.device_type || 'Desktop'}</div>
+                        <div style={{ color: '#94a3b8', fontSize: '0.75rem' }}>{ev.browser || 'Browser'} · {ev.operating_system || ''}</div>
+                      </td>
+
+                      {/* Recorded At */}
+                      <td style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
+                        {new Date(ev.visited_at).toLocaleString()}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

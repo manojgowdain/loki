@@ -9,7 +9,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-// Pin icons: GPS (green) vs IP (blue)
+// Green icon for exact GPS coordinates
 const gpsIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
@@ -19,6 +19,7 @@ const gpsIcon = new L.Icon({
   shadowSize: [41, 41]
 });
 
+// Blue icon for approximate IP Network coordinates
 const ipIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
@@ -53,36 +54,86 @@ export default function MapView({ locations = [] }) {
     if (markersGroup) {
       markersGroup.clearLayers();
 
-      const validPoints = locations.filter(
-        loc => typeof loc.latitude === 'number' && !isNaN(loc.latitude) &&
-               typeof loc.longitude === 'number' && !isNaN(loc.longitude)
-      );
-
-      validPoints.forEach(loc => {
-        const isGps = loc.gps_consent || loc.source === 'gps';
-        const icon = isGps ? gpsIcon : ipIcon;
-        const marker = L.marker([loc.latitude, loc.longitude], { icon });
+      locations.forEach(loc => {
         const timeStr = new Date(loc.visited_at).toLocaleString();
         const campaignTitle = loc.campaign_name || loc.name || loc.slug || 'Campaign';
 
-        marker.bindPopup(`
-          <div style="color: #0f172a; font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4;">
-            <div style="font-weight: 700; color: #1e40af; font-size: 14px; margin-bottom: 2px;">
-              ${campaignTitle}
+        const hasGps = typeof loc.gps_latitude === 'number' && !isNaN(loc.gps_latitude) &&
+                       typeof loc.gps_longitude === 'number' && !isNaN(loc.gps_longitude);
+
+        const hasIp = typeof loc.latitude === 'number' && !isNaN(loc.latitude) &&
+                      typeof loc.longitude === 'number' && !isNaN(loc.longitude);
+
+        // 1. Add GPS Marker (Green)
+        if (hasGps) {
+          const gpsMarker = L.marker([loc.gps_latitude, loc.gps_longitude], { icon: gpsIcon });
+          gpsMarker.bindPopup(`
+            <div style="color: #0f172a; font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4;">
+              <div style="font-weight: 700; color: #059669; font-size: 14px; margin-bottom: 2px;">
+                🟢 Device GPS Position
+              </div>
+              <div style="font-weight: 600; color: #1e293b; margin-bottom: 2px;">
+                ${campaignTitle}
+              </div>
+              <div style="color: #64748b; font-size: 11px; margin-bottom: 6px;">
+                /${loc.slug || ''}
+              </div>
+              <b>GPS Lat:</b> ${loc.gps_latitude.toFixed(6)}<br/>
+              <b>GPS Long:</b> ${loc.gps_longitude.toFixed(6)}<br/>
+              ${loc.gps_accuracy ? `<b>Accuracy:</b> ±${Math.round(loc.gps_accuracy)}m<br/>` : ''}
+              <span style="color: #94a3b8; font-size: 11px; display: inline-block; margin-top: 4px;">${timeStr}</span>
             </div>
-            <div style="color: #64748b; font-size: 11px; margin-bottom: 6px;">
-              /${loc.slug || ''}
+          `);
+          markersGroup.addLayer(gpsMarker);
+        }
+
+        // 2. Add IP Marker (Blue)
+        if (hasIp) {
+          const ipMarker = L.marker([loc.latitude, loc.longitude], { icon: ipIcon });
+          ipMarker.bindPopup(`
+            <div style="color: #0f172a; font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4;">
+              <div style="font-weight: 700; color: #2563eb; font-size: 14px; margin-bottom: 2px;">
+                🔵 ISP Network Location
+              </div>
+              <div style="font-weight: 600; color: #1e293b; margin-bottom: 2px;">
+                ${campaignTitle}
+              </div>
+              <div style="color: #64748b; font-size: 11px; margin-bottom: 6px;">
+                /${loc.slug || ''}
+              </div>
+              <b>IP Lat:</b> ${loc.latitude.toFixed(6)}<br/>
+              <b>IP Long:</b> ${loc.longitude.toFixed(6)}<br/>
+              ${loc.city ? `<b>City:</b> ${loc.city}, ${loc.country || ''}<br/>` : ''}
+              ${loc.isp ? `<b>ISP:</b> ${loc.isp}<br/>` : ''}
+              <span style="color: #94a3b8; font-size: 11px; display: inline-block; margin-top: 4px;">${timeStr}</span>
             </div>
-            <b>Latitude:</b> ${loc.latitude.toFixed(6)}<br/>
-            <b>Longitude:</b> ${loc.longitude.toFixed(6)}<br/>
-            <b>Source:</b> <span style="font-weight: 600; color: ${isGps ? '#059669' : '#2563eb'};">${isGps ? 'GPS (Consented)' : 'IP Network'}</span><br/>
-            <span style="color: #94a3b8; font-size: 11px; display: inline-block; margin-top: 4px;">${timeStr}</span>
-          </div>
-        `);
-        markersGroup.addLayer(marker);
+          `);
+          markersGroup.addLayer(ipMarker);
+        }
+
+        // 3. Draw connecting line if both GPS and IP are available
+        if (hasGps && hasIp) {
+          const latLngs = [
+            [loc.gps_latitude, loc.gps_longitude],
+            [loc.latitude, loc.longitude]
+          ];
+          const line = L.polyline(latLngs, {
+            color: '#10b981',
+            weight: 2,
+            opacity: 0.7,
+            dashArray: '5, 8'
+          });
+          line.bindPopup(`
+            <div style="font-size: 12px; font-family: system-ui;">
+              <b>Device GPS ↔ ISP Network Tower</b><br/>
+              <span style="color: #64748b;">${campaignTitle}</span>
+            </div>
+          `);
+          markersGroup.addLayer(line);
+        }
       });
 
-      if (validPoints.length > 0) {
+      if (markersGroup.getLayers().length > 0) {
         map.fitBounds(markersGroup.getBounds(), { padding: [50, 50], maxZoom: 14 });
       }
     }
