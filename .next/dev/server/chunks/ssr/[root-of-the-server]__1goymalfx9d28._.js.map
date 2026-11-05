@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 10, "column": 0}, "map": {"version":3,"sources":["file:///C:/project/locat/src/app/page.tsx"],"sourcesContent":["// src/app/page.tsx\nexport default function Home() {\n  return (\n    <main className=\"flex min-h-screen items-center justify-center\">\n      <h1 className=\"text-2xl font-bold\">Smart Link Platform – Admin Dashboard Coming Soon</h1>\n    </main>\n  );\n}\n"],"names":["Home","className"],"mappings":"AAAA,mBAAmB;;;;;;;AACJ,SAASA;IACtB,qBACE,8OAAC;QAAKC,WAAU;kBACd,cAAA,8OAAC;YAAGA,WAAU;sBAAqB;;;;;;;;;;;AAGzC"}}]
-}
